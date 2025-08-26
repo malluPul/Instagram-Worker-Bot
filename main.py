@@ -1557,7 +1557,7 @@ async def show_payment_qr_google_play_cb(_, query):
         return
     
     caption_text = "**" + to_bold_sans("Scan & Pay Using Google Pay") + "**\n\n" + \
-                   "Please send a screenshot of the payment to **[Admin Tom](https://t.me/CjjTom)** for activation."
+                    "Please send a screenshot of the payment to **[Admin Tom](https://t.me/CjjTom)** for activation."
     
     await query.message.reply_photo(
         photo=qr_file_id,
@@ -2283,7 +2283,7 @@ async def start_upload_task(msg, file_info, user_id):
         task_name="upload"
     )
 
-# NEW HELPER FUNCTION TO RESTORE AND VALIDATE THE IG CLIENT
+# CORRECTED HELPER FUNCTION TO RESTORE AND VALIDATE THE IG CLIENT
 async def get_insta_client_for_user(user_id, username):
     """
     Creates and validates an Instagram client for a user using their saved session
@@ -2292,28 +2292,35 @@ async def get_insta_client_for_user(user_id, username):
     session_data, device_settings = await load_platform_session_data(user_id, "instagram", username)
 
     if not session_data or not device_settings:
-        logger.error(f"Session or device settings not found for user {user_id} ({username}).")
-        return None
+        logger.error(f"Session or device settings not found for user {user_id} ({username}). Re-login required.")
+        raise LoginRequired("Session data not found. Please log in again.")
 
     try:
-        user_client = InstaClient(settings=device_settings)
+        user_client = InstaClient()
         proxy_url = global_settings.get("proxy_url")
         if proxy_url:
             user_client.set_proxy(proxy_url)
         
-        # Load the session cookies and data
+        # CRITICAL FIX: Restore the device fingerprint FIRST
+        user_client.device_settings = device_settings
+        
+        # Then, load the session cookies and other data
         await asyncio.to_thread(user_client.set_settings, session_data)
         
-        # Re-login with the session ID to validate it
+        # Re-login with the session ID to validate it and refresh internal state
         await asyncio.to_thread(user_client.login_by_sessionid, session_data['authorization_data']['sessionid'])
         
         # Make a test API call to ensure the session is fully functional
-        await asyncio.to_thread(user_client.get_timeline_feed) 
+        await asyncio.to_thread(user_client.get_timeline_feed)
+        
         logger.info(f"Successfully created and validated insta client for user {user_id} ({username})")
         return user_client
+    except LoginRequired as e:
+        logger.warning(f"Instagrapi reports LoginRequired for user {user_id} ({username}). Session may be expired. Error: {e}")
+        raise # Re-raise the exception to be handled by the calling function
     except Exception as e:
         logger.error(f"Failed to create/validate insta client for user {user_id} ({username}). Error: {e}")
-        # This exception will be caught by the calling function (process_and_upload)
+        # Raise LoginRequired to trigger a user-facing error message asking them to re-login.
         raise LoginRequired("IG session is invalid or expired. Please re-login.")
 
 
@@ -2454,7 +2461,7 @@ async def process_and_upload(msg, file_info, user_id, is_scheduled=False):
                 })
 
             log_msg = f"📤 New {platform.capitalize()} {upload_type.capitalize()} Upload\n" \
-                      f"👤 User: `{user_id}`\n🔗 URL: {url}\n📅 {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+                        f"👤 User: `{user_id}`\n🔗 URL: {url}\n📅 {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
             await safe_edit_message(processing_msg, f"✅ " + to_bold_sans("Uploaded Successfully!") + f"\n\n{url}", parse_mode=None)
             await send_log_to_channel(app, LOG_CHANNEL, log_msg)
 
