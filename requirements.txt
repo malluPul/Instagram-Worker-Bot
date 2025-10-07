@@ -1,5 +1,5 @@
 # Core Telegram Bot Framework
-pyrogram==2.0.106
+pyrofork
 TgCrypto==1.2.5
 
 # Social Media Integrations
