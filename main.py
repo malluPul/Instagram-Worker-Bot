@@ -40,7 +40,6 @@ from instagrapi.exceptions import (
 from instagrapi.types import Usertag, Location, StoryMention, StoryLocation, StoryHashtag, StoryLink
 # System Utilities
 import psutil
-import GPUtil
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
