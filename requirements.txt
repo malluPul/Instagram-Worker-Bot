@@ -14,3 +14,6 @@ pymongo[srv]==4.6.1
 psutil==5.9.8
 GPUtil==1.4.0
 python-dotenv==1.0.0
+
+# Compatibility for distutils (Python 3.12+)
+setuptools
