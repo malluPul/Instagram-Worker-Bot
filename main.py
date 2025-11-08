@@ -2533,23 +2533,33 @@ main_bot_reply_filter = filters.create(main_bot_worker_reply)
 # This handler is for the WORKER bot to RECEIVE tasks
 @app.on_message(filters.text & worker_task_filter & filters.reply)
 async def receive_task_handler(client, message):
-    if not (message.reply_to_message or message.reply_to_message_group_id):
-        return # Not a valid task ID reply
     
     task_id = message.text.strip()
     if not task_id or task_id.startswith("done_"):
+        return
+
+    # Get the message this task_id is replying to
+    replied_msg = message.reply_to_message
+    if not replied_msg:
+        logger.error(f"[WORKER] Task ID {task_id} is not a reply to any message.")
         return
 
     logger.info(f"[WORKER] Received task: {task_id}")
     
     media_messages = []
     try:
-        if message.reply_to_message_group_id:
+        # === FIX ===
+        # Check if the REPLIED-TO message (the media) has a media_group_id
+        if replied_msg.media_group_id:
             # It's an album
-            media_messages = await app.get_media_group(WORKER_CHANNEL_ID, message.reply_to_message_id)
+            logger.info(f"[WORKER] Task {task_id} is an album (group ID: {replied_msg.media_group_id}). Fetching group.")
+            media_messages = await app.get_media_group(WORKER_CHANNEL_ID, replied_msg.id)
         else:
             # It's a single file
-            media_messages.append(message.reply_to_message)
+            logger.info(f"[WORKER] Task {task_id} is a single file.")
+            media_messages.append(replied_msg)
+        # === END FIX ===
+
     except FloodWait as e:
         logger.warning(f"[WORKER] FloodWait when getting media group for {task_id}. Sleeping for {e.value}s")
         await asyncio.sleep(e.value)
