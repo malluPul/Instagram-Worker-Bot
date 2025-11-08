@@ -20,10 +20,10 @@ from pymongo import MongoClient
 from pymongo.errors import OperationFailure
 # Pyrogram (Telegram Bot)
 from pyrogram import Client, filters, enums, idle
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.types import (
-    InputMediaVideo,  # <-- Added
-    InputMediaPhoto  # <-- Added
+    InputMediaVideo,
+    InputMediaPhoto
 )
 # System Utilities
 import psutil
@@ -48,7 +48,6 @@ ADMIN_ID_STR = os.getenv("ADMIN_ID")
 WORKER_CHANNEL_ID_STR = os.getenv("WORKER_CHANNEL_ID")
 
 # --- Validate required variables ---
-# This is a dedicated worker, so we check worker-specific vars + ADMIN_ID
 if not all([API_ID_STR, API_HASH, BOT_TOKEN, MONGO_URI, WORKER_CHANNEL_ID_STR, ADMIN_ID_STR]):
     logger.critical(
         "FATAL ERROR (WORKER): Missing essential worker variables. Check API_ID, API_HASH, BOT_TOKEN, MONGO_URI, WORKER_CHANNEL_ID, ADMIN_ID.")
@@ -60,18 +59,15 @@ API_ID = int(API_ID_STR)
 ADMIN_ID = int(ADMIN_ID_STR)
 LOG_CHANNEL = int(LOG_CHANNEL_STR) if LOG_CHANNEL_STR else None
 WORKER_CHANNEL_ID = int(WORKER_CHANNEL_ID_STR)
-IS_WORKER_BOOL = True  # This is a dedicated worker
+IS_WORKER_BOOL = True
 
 # === Video Conversion Helpers ===
 
 def needs_conversion(input_file: str) -> bool:
     """
-    Checks if a video file needs conversion to be Instagram-compatible (MP4/AAC).
-    Uses ffprobe to inspect the file's container and audio codec.
-    Returns True if conversion is needed, False otherwise.
+    Checks if a video file needs conversion (audio only).
     """
     try:
-        # Command to get stream info as JSON from ffprobe
         command = [
             'ffprobe',
             '-v', 'quiet',
@@ -83,61 +79,50 @@ def needs_conversion(input_file: str) -> bool:
         result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
         data = json.loads(result.stdout)
 
-        # Check container format
-        format_name = data.get('format', {}).get('format_name', '')
-        is_compatible_container = any(x in format_name for x in ['mp4', 'mov', '3gp'])
-
         # Check audio stream codec
-        audio_codec = 'none'  # Default for videos with no audio
+        audio_codec = 'none'
         for stream in data.get('streams', []):
             if stream.get('codec_type') == 'audio':
                 audio_codec = stream.get('codec_name')
-                break  # Found the first audio stream
+                break
 
-        is_compatible_audio = (audio_codec == 'aac' or audio_codec == 'none')
+        is_compatible_audio = (audio_codec == 'aac')
 
-        if is_compatible_container and is_compatible_audio:
-            logger.info(
-                f"'{input_file}' is already compatible (Container: {format_name}, Audio: {audio_codec}). No conversion needed.")
+        if is_compatible_audio:
+            logger.info(f"'{input_file}' audio is already compatible (Audio: {audio_codec}). No conversion needed.")
             return False
         else:
-            logger.warning(
-                f"'{input_file}' needs conversion (Container: {format_name}, Audio: {audio_codec}).")
+            logger.warning(f"'{input_file}' needs audio conversion (Audio: {audio_codec}).")
             return True
 
-    except FileNotFoundError:
-        logger.error(
-            "ffprobe/ffmpeg is not installed. Cannot check video format. Assuming conversion is needed as a fallback.")
-        return True  # Failsafe: if we can't check, we should try to convert.
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
-        logger.error(
-            f"Could not probe file '{input_file}'. It might be corrupted or not a valid video. Assuming conversion is needed.")
-        return True  # Failsafe for corrupted or non-media files
+    except Exception:
+        logger.error(f"Could not probe file '{input_file}'. Assuming conversion is needed.")
+        return True
+
 
 def fix_for_instagram(input_file: str, output_file: str) -> str:
     """
-    Converts a video file to a high-quality, Instagram-compatible format (MP4, H.264, AAC).
-    This process is optimized for better speed and lower CPU usage while maintaining high quality.
+    Converts a video file to an Instagram-compatible format by COPYING the video stream
+    and re-encoding only the AUDIO. This is extremely fast and uses almost NO CPU.
+    This PRESERVES 100% of the original video quality and prevents crashes on free servers.
     """
     try:
-        logger.info(f"Starting OPTIMIZED conversion for '{input_file}'...")
+        logger.info(f"Starting FAST (Audio-Only) conversion for '{input_file}'...")
         command = [
             'ffmpeg',
             '-y',
             '-i', input_file,
-            '-c:v', 'libx264',      # H.264 കോഡെക് ഉപയോഗിച്ച് റീ-എൻകോഡ് ചെയ്യുക
-            '-preset', 'medium',    # 'slow' എന്നതിന് പകരം 'medium' ആക്കുന്നു (CPU ഉപയോഗം കുറയ്ക്കാൻ)
-            '-crf', '20',           # '18' ന് പകരം '20' ആക്കുന്നു (ചെറിയ ക്വാളിറ്റി കുറയും, പക്ഷെ വേഗത കൂടും)
-            '-pix_fmt', 'yuv420p',  # എല്ലാ ഡിവൈസുകൾക്കും അനുയോജ്യമാക്കാൻ
-            '-c:a', 'aac',          # AAC ഓഡിയോ കോഡെക്
-            '-b:a', '320k',         # ഓഡിയോ ബിറ്റ്റേറ്റ് 320k (High Quality)
+            '-c:v', 'copy',          # 100% ഒറിജിനൽ വീഡിയോ ക്വാളിറ്റി (CPU ഉപയോഗം ഇല്ല)
+            '-c:a', 'aac',          # ഓഡിയോ AAC ആക്കി മാറ്റുന്നു
+            '-b:a', '192k',         # ഓഡിയോ ബിറ്റ്റേറ്റ് (192k മതിയാകും)
             '-ar', '48000',         # ഓഡിയോ സാമ്പിൾ റേറ്റ്
+            '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
             output_file
         ]
 
         result = subprocess.run(command, check=True, capture_output=True, text=True)
-        logger.info(f"Successfully converted video to '{output_file}'.")
+        logger.info(f"Successfully converted video (audio only) to '{output_file}'.")
         return output_file
 
     except FileNotFoundError:
@@ -145,7 +130,29 @@ def fix_for_instagram(input_file: str, output_file: str) -> str:
         raise FileNotFoundError("ffmpeg is not installed. Cannot process video files.")
     except subprocess.CalledProcessError as e:
         logger.error(f"ffmpeg conversion failed for {input_file}. Error: {e.stderr}")
-        raise ValueError(f"Video format is incompatible and conversion failed. Error: {e.stderr}")
+        # Fallback: If 'copy' fails (e.g., incompatible pixel format), try re-encoding with ultrafast preset
+        logger.warning(f"Fallback: Trying re-encoding with 'ultrafast' for {input_file}...")
+        try:
+            command_fallback = [
+                'ffmpeg',
+                '-y',
+                '-i', input_file,
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast', # ഏറ്റവും വേഗതയേറിയതും CPU കുറഞ്ഞതുമായ എൻകോഡിംഗ്
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-ar', '48000',
+                '-movflags', '+faststart',
+                output_file
+            ]
+            result = subprocess.run(command_fallback, check=True, capture_output=True, text=True)
+            logger.info(f"Successfully converted video (Fallback) to '{output_file}'.")
+            return output_file
+        except Exception as fallback_e:
+            logger.error(f"ffmpeg fallback conversion also failed for {input_file}. Error: {fallback_e}")
+            raise ValueError(f"Video format is incompatible and conversion failed. Error: {e.stderr}")
 
 
 # --- Global State & DB Management ---
@@ -197,15 +204,6 @@ class TaskTracker:
             if not self._user_specific_tasks[user_id]:
                 del self._user_specific_tasks[user_id]
 
-    async def cancel_all_user_tasks(self, user_id):
-        if user_id in self._user_specific_tasks:
-            user_tasks = self._user_specific_tasks.pop(user_id)
-            for task_name, task in user_tasks.items():
-                if not task.done():
-                    task.cancel()
-                    logger.info(f"Cancelled task '{task_name}' for user {user_id} during cleanup.")
-            await asyncio.gather(*[t for t in user_tasks.values() if not t.done()], return_exceptions=True)
-
     async def cancel_and_wait_all(self):
         tasks_to_cancel = [t for t in self._tasks if not t.done()]
         if not tasks_to_cancel:
@@ -242,16 +240,12 @@ def is_admin(user_id):
 
 async def send_admin_status(task_id: str, text: str, edit: bool = False):
     """Sends or edits a progress message to the ADMIN_ID."""
-    if not ADMIN_ID:  # If ADMIN_ID is not set, do nothing
+    if not ADMIN_ID:
         return
 
     try:
         if edit and task_id in admin_progress_messages:
             msg_id = admin_progress_messages[task_id]
-            # Avoid re-editing if text is the same
-            current_msg = await app.get_messages(ADMIN_ID, msg_id)
-            if current_msg.text == text:
-                return
             await app.edit_message_text(ADMIN_ID, msg_id, text)
         else:
             msg = await app.send_message(ADMIN_ID, text)
@@ -259,6 +253,8 @@ async def send_admin_status(task_id: str, text: str, edit: bool = False):
     except FloodWait as e:
         logger.warning(f"FloodWait when sending admin status: {e.value}s")
         await asyncio.sleep(e.value)
+    except MessageNotModified:
+        pass # Ignore if the message is the same
     except Exception as e:
         logger.error(f"Failed to send admin status for task {task_id}: {e}")
 
@@ -267,7 +263,6 @@ async def admin_progress_callback(current, total, task_id, status_text):
     """Callback function for admin progress updates."""
     try:
         percentage = int(current * 100 / total)
-        # Update every 10% or if it's the first/last update
         if percentage % 10 == 0 or current == total or current == 0:
             await send_admin_status(
                 task_id,
@@ -275,9 +270,9 @@ async def admin_progress_callback(current, total, task_id, status_text):
                 edit=True
             )
     except Exception:
-        pass  # Ignore progress errors
+        pass
 
-# === NEW: Heartbeat function for FFmpeg ===
+
 async def update_conversion_heartbeat(task_id, admin_status_text, stop_event: asyncio.Event):
     """Updates the admin message with a spinner to show activity."""
     spinners = ["⢿", "⣻", "⣽", "⣾", "⣷", "⣯", "⣷", "⣾", "⣽", "⣻"]
@@ -294,20 +289,23 @@ async def update_conversion_heartbeat(task_id, admin_status_text, stop_event: as
             await asyncio.sleep(2)  # Update spinner every 2 seconds
         except asyncio.CancelledError:
             break
-        except Exception as e:
-            logger.warning(f"Heartbeat update failed: {e}")
-            break  # Stop if it fails
+        except Exception:
+            break
+
 
 @app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
 async def restart_worker_cmd(_, msg):
     """Gracefully restarts the worker bot."""
     await msg.reply("🛠 **Worker Bot Restarting...**")
     logger.info(f"Admin {msg.from_user.id} initiated worker restart.")
-    # Send final log before exit
-    await send_admin_status("WORKER_RESTART", "🛠 Worker Bot Restarting...", edit=False)
+    
+    # Send final log to admin DM
+    await send_admin_status(
+        "WORKER_RESTART",
+        f"🛠 **Worker Restart Initiated**\nby Admin: `{msg.from_user.id}`\nThe bot will now shut down.",
+        edit=False
+    )
 
-    # Gracefully shut down
-    # We use sys.exit() and let the process manager (like Docker/Sevalla) restart it.
     sys.exit(0)
 
 
@@ -317,10 +315,8 @@ async def schedule_cleanup(files_to_clean, task_id, delay_seconds=300):
     logger.info(f"[CLEANUP] Cleaning up {len(files_to_clean)} files for task {task_id}.")
     await cleanup_temp_files(files_to_clean)
 
-    # Clean up the admin message from our dictionary
     if task_id in admin_progress_messages:
         try:
-            # Delete the admin progress message
             await app.delete_messages(ADMIN_ID, admin_progress_messages[task_id])
             del admin_progress_messages[task_id]
         except Exception as e:
@@ -331,7 +327,6 @@ async def cleanup_temp_files(files_to_delete):
     for file_path in files_to_delete:
         if file_path:
             try:
-                # Run blocking I/O in a thread
                 if await asyncio.to_thread(os.path.exists, file_path):
                     await asyncio.to_thread(os.remove, file_path)
             except Exception as e:
@@ -378,52 +373,44 @@ async def receive_task_handler(client, message):
     if not task_id or task_id.startswith("done_"):
         return
 
-    # Get the message this task_id is replying to
     replied_msg = message.reply_to_message
     if not replied_msg:
-        logger.error(f"[WORKER] Task ID {task_id} is not a reply to any message.")
+        logger.error(f"[WORKK] Task ID {task_id} is not a reply.")
         return
 
     logger.info(f"[WORKER] Received task: {task_id}")
 
     media_messages = []
     try:
-        # Check if the REPLIED-TO message (the media) has a media_group_id
         if replied_msg.media_group_id:
-            # It's an album
-            logger.info(f"[WORKER] Task {task_id} is an album (group ID: {replied_msg.media_group_id}). Fetching group.")
+            logger.info(f"[WORKER] Task {task_id} is an album.")
             media_messages = await app.get_media_group(WORKER_CHANNEL_ID, replied_msg.id)
         else:
-            # It's a single file
             logger.info(f"[WORKER] Task {task_id} is a single file.")
             media_messages.append(replied_msg)
-
     except FloodWait as e:
-        logger.warning(f"[WORKER] FloodWait when getting media group for {task_id}. Sleeping for {e.value}s")
+        logger.warning(f"[WORKER] FloodWait: {e.value}s")
         await asyncio.sleep(e.value)
-        return  # Let it retry on next cycle
+        return
     except Exception as e:
-        logger.error(f"[WORKER] Error getting media for task {task_id}: {e}")
+        logger.error(f"[WORKER] Error getting media: {e}")
         return
 
     if not media_messages:
         logger.error(f"[WORKER] No media found for task {task_id}")
         return
 
-    # Fetch task data from DB
     task_data = await asyncio.to_thread(db.tasks.find_one, {"_id": task_id})
     if not task_data:
         logger.error(f"[WORKER] No DB entry found for task {task_id}")
         return
 
     if task_data.get("status") != "pending_conversion":
-        logger.warning(
-            f"[WORKER] Task {task_id} is not pending conversion (Status: {task_data.get('status')}). Skipping.")
+        logger.warning(f"[WORKER] Task {task_id} not pending (Status: {task_data.get('status')}). Skipping.")
         return
     
-    user_id = task_data.get("user_id", "Unknown") # Get user ID for admin message
+    user_id = task_data.get("user_id", "Unknown")
 
-    # === ADMIN NOTIFICATION: START ===
     await send_admin_status(task_id, f"👤 **New Task Started**\n**Task ID:** `{task_id}`\n**User:** `{user_id}`\n**Status:** 📥 Downloading...")
 
     await asyncio.to_thread(db.tasks.update_one, {"_id": task_id}, {"$set": {"status": "converting"}})
@@ -441,7 +428,6 @@ async def receive_task_handler(client, message):
             status_msg = f"Downloading file {i + 1}/{len(media_messages)} for task {task_id}..."
             logger.info(f"[WORKER] {status_msg}")
 
-            # === ADMIN NOTIFICATION: DOWNLOAD PROGRESS ===
             admin_status_text = f"👤 **Task:** `{task_id}`\n**User:** `{user_id}`\n**Status:** 📥 Downloading file {i+1}/{len(media_messages)}..."
             
             download_path = await client.download_media(
@@ -451,40 +437,34 @@ async def receive_task_handler(client, message):
             )
             files_to_clean.append(download_path)
 
-            # === MODIFICATION: Force conversion for all videos (Step 2.2) ===
-            if is_video_file:
-                # === ADMIN NOTIFICATION: CONVERTING (with HEARTBEAT) ===
-                admin_status_text = f"👤 **Task:** `{task_id}`\n**User:** `{user_id}`\n**Status:** ⚙️ Converting (Please wait...)"
+            # === MODIFICATION: Check if audio conversion is needed ===
+            if is_video_file and await asyncio.to_thread(needs_conversion, download_path):
+                
+                admin_status_text = f"👤 **Task:** `{task_id}`\n**User:** `{user_id}`\n**Status:** ⚙️ Converting (Fast audio)..."
                 await send_admin_status(task_id, admin_status_text, edit=True)
                 
-                # Start heartbeat
                 stop_heartbeat.clear()
                 heartbeat_task = task_tracker.create_task(
                     update_conversion_heartbeat(task_id, admin_status_text, stop_heartbeat)
                 )
 
-                logger.info(f"[WORKER] File is a video. Sending to HIGH-QUALITY conversion: {download_path}")
+                logger.info(f"[WORKER] File is a video. Sending to FAST (Audio) conversion: {download_path}")
                 fixed_path = download_path.rsplit(".", 1)[0] + "_fixed.mp4"
                 
-                # Run blocking conversion in thread
                 converted_path = await asyncio.to_thread(fix_for_instagram, download_path, fixed_path)
                 
-                # Stop heartbeat
                 stop_heartbeat.set()
                 
                 converted_paths.append(converted_path)
                 files_to_clean.append(converted_path)
             else:
-                # It's a photo
-                logger.info(f"[WORKER] File is a photo. No conversion needed.")
+                # It's a photo or a compatible video
+                logger.info(f"[WORKER] File is a photo or compatible video. No conversion needed.")
                 converted_paths.append(download_path)
 
-        # Stop heartbeat task if it's still running (e.g., if loop finished without video)
         stop_heartbeat.set()
 
-        # Now, upload converted files back to the channel
-        logger.info(f"[WORKER] Conversion complete for {task_id}. Uploading {len(converted_paths)} files back.")
-        # === ADMIN NOTIFICATION: UPLOADING ===
+        logger.info(f"[WORKER] Conversion complete. Uploading {len(converted_paths)} files back.")
         await send_admin_status(task_id,
                                 f"👤 **Task:** `{task_id}`\n**User:** `{user_id}`\n**Status:** 📤 Uploading back to channel...",
                                 edit=True)
@@ -496,11 +476,9 @@ async def receive_task_handler(client, message):
                     media_group.append(InputMediaVideo(path))
                 else:
                     media_group.append(InputMediaPhoto(path))
-
             sent_msgs = await app.send_media_group(WORKER_CHANNEL_ID, media_group)
             await app.send_message(WORKER_CHANNEL_ID, f"done_{task_id}", reply_to_message_id=sent_msgs[-1].id)
-
-        else:  # Single file
+        else:
             path = converted_paths[0]
             sent_msg = None
             if path.endswith((".mp4", ".mov", ".mkv")):
@@ -511,7 +489,6 @@ async def receive_task_handler(client, message):
 
         await asyncio.to_thread(db.tasks.update_one, {"_id": task_id}, {"$set": {"status": "converted"}})
         logger.info(f"[WORKER] Task {task_id} finished and sent back.")
-        # === ADMIN NOTIFICATION: DONE ===
         await send_admin_status(task_id,
                                 f"✅ **Task Complete**\n**Task ID:** `{task_id}`\n**User:** `{user_id}`\n**Status:** ✔️ Finished.",
                                 edit=True)
@@ -519,23 +496,18 @@ async def receive_task_handler(client, message):
     except Exception as e:
         logger.error(f"[WORKER] Failed to process task {task_id}: {e}", exc_info=True)
         await asyncio.to_thread(db.tasks.update_one, {"_id": task_id}, {"$set": {"status": "failed", "error": str(e)}})
-        # === ADMIN NOTIFICATION: FAILED ===
         await send_admin_status(task_id,
                                 f"❌ **Task Failed**\n**Task ID:** `{task_id}`\n**User:** `{user_id}`\n**Error:** `{e}`",
                                 edit=True)
 
     finally:
-        # Ensure heartbeat task is always stopped
         stop_heartbeat.set()
         if heartbeat_task:
-            try:
-                await asyncio.wait_for(heartbeat_task, timeout=0.1)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
+            try: await asyncio.wait_for(heartbeat_task, timeout=0.1)
+            except Exception: pass
         
-        # === MODIFICATION: Call scheduled cleanup (Step 3.3b) ===
         task_tracker.create_task(schedule_cleanup(files_to_clean, task_id, delay_seconds=300))
-        logger.info(f"[WORKER] Task {task_id} processing finished. Cleanup scheduled in 5 minutes.")
+        logger.info(f"[WORKVER] Task {task_id} processing finished. Cleanup scheduled.")
 
 
 async def send_log_to_channel(client, channel_id, text):
@@ -545,7 +517,7 @@ async def send_log_to_channel(client, channel_id, text):
     try:
         await client.send_message(channel_id, text, disable_web_page_preview=True, parse_mode=enums.ParseMode.MARKDOWN)
     except Exception as e:
-        logger.error(f"Failed to log to channel {channel_id} (General Error): {e}")
+        logger.error(f"Failed to log to channel {channel_id}: {e}")
         valid_log_channel = False
 
 
@@ -561,15 +533,13 @@ async def start_bot():
     try:
         mongo = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         mongo.admin.command('ping')
-        db = mongo.NowTok  # Or your DB name
+        db = mongo.NowTok
         logger.info("✅ Connected to MongoDB successfully.")
-
     except Exception as e:
         logger.critical(f"❌ DATABASE SETUP FAILED: {e}. Worker cannot function without DB.")
         db = None
-        sys.exit(1) # Worker must have DB
+        sys.exit(1)
 
-    # Start the HTTP health check server in a separate thread (RE-ADDED)
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
 
@@ -577,16 +547,25 @@ async def start_bot():
 
     task_tracker.loop = asyncio.get_running_loop()
 
-    # === Simplified WORKER STARTUP LOGIC ===
     logger.info(f"Bot starting in WORKER mode. Listening on channel {WORKER_CHANNEL_ID}")
+    
+    # Send log to channel
     if LOG_CHANNEL:
         try:
             await app.send_message(LOG_CHANNEL, "🛠️ **Worker Bot is Online!**\nListening for conversion tasks...")
             valid_log_channel = True
         except Exception as e:
-            logger.error(f"Could not log to channel {LOG_CHANNEL}. Invalid or bot isn't admin. Error: {e}")
+            logger.error(f"Could not log to channel {LOG_CHANNEL}: {e}")
             valid_log_channel = False
-    # === END STARTUP LOGIC ===
+    
+    # === NEW FEATURE: Send DM to ADMIN on startup ===
+    try:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        await app.send_message(ADMIN_ID, f"✅ **Worker Bot is ONLINE!**\nStarted/Restarted at: `{timestamp}`")
+        logger.info(f"Sent startup notification to ADMIN ({ADMIN_ID})")
+    except Exception as e:
+        logger.error(f"Could not send startup DM to ADMIN ({ADMIN_ID}): {e}")
+    # === END NEW FEATURE ===
 
     logger.info("Worker Bot is now online! Waiting for tasks...")
     await idle()
