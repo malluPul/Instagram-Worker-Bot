@@ -117,21 +117,21 @@ def needs_conversion(input_file: str) -> bool:
 def fix_for_instagram(input_file: str, output_file: str) -> str:
     """
     Converts a video file to a high-quality, Instagram-compatible format (MP4, H.264, AAC).
-    This process is slow but prioritizes quality.
+    This process is optimized for better speed and lower CPU usage while maintaining high quality.
     """
     try:
-        logger.info(f"Starting HIGH-QUALITY conversion for '{input_file}'...")
+        logger.info(f"Starting OPTIMIZED conversion for '{input_file}'...")
         command = [
             'ffmpeg',
             '-y',
             '-i', input_file,
-            '-c:v', 'libx264',  # H.264 കോഡെക് ഉപയോഗിച്ച് റീ-എൻകോഡ് ചെയ്യുക
-            '-preset', 'slow',  # വേഗത കുറച്ച് മികച്ച കംപ്രഷൻ നൽകുക
-            '-crf', '18',  # ക്വാളിറ്റി ലെവൽ (0-51, 0 lossless, 18-28 സാധാരണ, 18 മികച്ചതാണ്)
+            '-c:v', 'libx264',      # H.264 കോഡെക് ഉപയോഗിച്ച് റീ-എൻകോഡ് ചെയ്യുക
+            '-preset', 'medium',    # 'slow' എന്നതിന് പകരം 'medium' ആക്കുന്നു (CPU ഉപയോഗം കുറയ്ക്കാൻ)
+            '-crf', '20',           # '18' ന് പകരം '20' ആക്കുന്നു (ചെറിയ ക്വാളിറ്റി കുറയും, പക്ഷെ വേഗത കൂടും)
             '-pix_fmt', 'yuv420p',  # എല്ലാ ഡിവൈസുകൾക്കും അനുയോജ്യമാക്കാൻ
-            '-c:a', 'aac',  # AAC ഓഡിയോ കോഡെക്
-            '-b:a', '320k',  # ഓഡിയോ ബിറ്റ്റേറ്റ് 192k-ൽ നിന്ന് 320k ആക്കുക (High Quality)
-            '-ar', '48000',  # ഓഡിയോ സാമ്പിൾ റേറ്റ്
+            '-c:a', 'aac',          # AAC ഓഡിയോ കോഡെക്
+            '-b:a', '320k',         # ഓഡിയോ ബിറ്റ്റേറ്റ് 320k (High Quality)
+            '-ar', '48000',         # ഓഡിയോ സാമ്പിൾ റേറ്റ്
             '-movflags', '+faststart',
             output_file
         ]
